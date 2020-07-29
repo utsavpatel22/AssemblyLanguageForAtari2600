@@ -16,6 +16,8 @@ JetXPos         byte         ; player 0 x-position
 JetYPos         byte         ; player 0 y-position
 BomberXPos      byte         ; player 1 x-position
 BomberYPos      byte         ; player 1 y-position
+MissileXPos     byte         ; missile x-position
+MissileYPos     byte         ; missile y-position
 Score           byte         ; 2-digit score stored as BCD
 Timer           byte         ; 2-digit timer stored as BCD
 Temp            byte         ; auxiliary variable to store temp values
@@ -64,6 +66,20 @@ Reset:
     lda #0
     sta Score                ; Score = 0
     sta Timer                ; Timer = 0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Declare a MACRO to check if we should display the missile 0
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+    MAC DRAW_MISSILE
+        lda #%00000000
+        cpx MissileYPos      ; compare X (current scanline) with missile Y pos
+        bne .SkipMissileDraw ; if (X != missile Y position), then skip draw
+.DrawMissile:                ; else:
+        lda #%00000010       ;     enable missile 0 display
+        inc MissileYPos      ;     MissileYPos++
+.SkipMissileDraw:
+        sta ENAM0            ; store correct value in the TIA missile register
+    ENDM
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initialize the pointers to the correct lookup table adresses
@@ -118,6 +134,10 @@ StartFrame:
     lda BomberXPos
     ldy #1
     jsr SetObjectXPos        ; set player1 horizontal position
+
+    lda MissileXPos
+    ldy #2
+    jsr SetObjectXPos        ; set missile horizontal position
 
     jsr CalculateDigitOffset ; calculate scoreboard digits lookup table offset
 
@@ -219,11 +239,13 @@ GameVisibleLine:
 
     ldx #85                  ; X counts the number of remaining scanlines
 .GameLineLoop:
+    DRAW_MISSILE             ; macro to check if we should draw the missile
+
 .AreWeInsideJetSprite:
     txa                      ; transfer X to A
     sec                      ; make sure carry flag is set before subtraction
     sbc JetYPos              ; subtract sprite Y-coordinate
-    cmp JET_HEIGHT           ; are we inside the sprite height bounds?
+    cmp #JET_HEIGHT          ; are we inside the sprite height bounds?
     bcc .DrawSpriteP0        ; if result < SpriteHeight, call the draw routine
     lda #0                   ; else, set lookup index to zero
 .DrawSpriteP0:
@@ -240,7 +262,7 @@ GameVisibleLine:
     txa                      ; transfer X to A
     sec                      ; make sure carry flag is set before subtraction
     sbc BomberYPos           ; subtract sprite Y-coordinate
-    cmp BOMBER_HEIGHT        ; are we inside the sprite height bounds?
+    cmp #BOMBER_HEIGHT       ; are we inside the sprite height bounds?
     bcc .DrawSpriteP1        ; if result < SpriteHeight, call the draw routine
     lda #0                   ; else, set lookup index to zero
 .DrawSpriteP1:
@@ -275,7 +297,7 @@ GameVisibleLine:
     sta VBLANK               ; turn off VBLANK
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Process joystick input for player0 up/down/left/right
+;; Process joystick input for player 0 up/down/left/right
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CheckP0Up:
     lda #%00010000           ; if player 0 joystick up
@@ -284,6 +306,7 @@ CheckP0Up:
     lda JetYPos
     cmp #70                  ; if (player0 Y position > 70)
     bpl CheckP0Down          ;    then: skip increment
+.P0UpPressed:
     inc JetYPos              ;    else: increment Y position
     lda #0
     sta JetAnimOffset        ; set jet animation frame to zero
@@ -295,6 +318,7 @@ CheckP0Down:
     lda JetYPos
     cmp #5                   ; if (player0 Y position < 5)
     bmi CheckP0Left          ;    then: skip decrement
+.P0DownPressed:
     dec JetYPos              ;    else: decrement Y position
     lda #0
     sta JetAnimOffset        ; set jet animation frame to zero
@@ -306,21 +330,36 @@ CheckP0Left:
     lda JetXPos
     cmp #35                  ; if (player0 X position < 35)
     bmi CheckP0Right         ;    then: skip decrement
+.P0LeftPressed:
     dec JetXPos              ;    else: decrement X position
-    lda JET_HEIGHT
+    lda #JET_HEIGHT
     sta JetAnimOffset        ; set new offset to display second sprite frame
 
 CheckP0Right:
     lda #%10000000           ; if player 0 joystick right
     bit SWCHA
-    bne EndInputCheck
+    bne CheckButtonPressed
     lda JetXPos
     cmp #100                 ; if (player0 X position > 100)
-    bpl EndInputCheck        ;    then: skip increment
+    bpl CheckButtonPressed   ;    then: skip increment
+.P0RightPressed:
     inc JetXPos              ;    else: increment X position
-
-    lda JET_HEIGHT
+    lda #JET_HEIGHT
     sta JetAnimOffset        ; set new offset to display second sprite frame
+
+CheckButtonPressed:
+    lda #%10000000           ; if button is pressed
+    bit INPT4
+    bne EndInputCheck
+.ButtonPressed:
+    lda JetXPos
+    clc
+    adc #5
+    sta MissileXPos          ; set the missile X position equal to the player 0
+    lda JetYPos
+    clc
+    adc #8
+    sta MissileYPos          ; set the missile Y position equal to the player 0
 
 EndInputCheck:               ; fallback when no input was performed
 
@@ -339,10 +378,6 @@ UpdateBomberPosition:
 
 .SetScoreValues:
     sed                      ; set BCD mode for score and timer values
-    lda Score
-    clc
-    adc #1
-    sta Score                ; add 1 to the Score (BCD does not like INC)
     lda Timer
     clc
     adc #1
@@ -357,11 +392,26 @@ EndPositionUpdate:           ; fallback for the position update code
 CheckCollisionP0P1:
     lda #%10000000           ; CXPPMM bit 7 detects P0 and P1 collision
     bit CXPPMM               ; check CXPPMM bit 7 with the above pattern
-    bne .P0P1Collided        ; if collision between P0 and P1 happened, branch
-    jsr SetTerrainRiverColor ; else, set playfield color to green/blue
-    jmp EndCollisionCheck    ; else, skip to next check
+    bne .P0P1Collided        ; if collision between P0 and P1 happened, skip
+    jsr SetTerrainRiverColor ; else, set river/terrain to green/blue
+    jmp CheckCollisionM0P1   ; check next possible collision
 .P0P1Collided:
     jsr GameOver             ; call GameOver subroutine
+
+CheckCollisionM0P1:
+    lda #%10000000           ; CXM0P bit 7 detects M0 and P1 collision
+    bit CXM0P                ; check CXM0P bit 7 with the above pattern
+    bne .M0P1Collided        ; collision missile 0 and player 1 happened
+    jmp EndCollisionCheck
+.M0P1Collided:
+    sed
+    lda Score
+    clc
+    adc #1
+    sta Score                ; adds 1 to the Score using decimal mode
+    cld
+    lda #0
+    sta MissileYPos          ; reset the missile position
 
 EndCollisionCheck:           ; fallback
     sta CXCLR                ; clear all collision flags before the next frame
