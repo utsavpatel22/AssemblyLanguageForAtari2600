@@ -120,12 +120,12 @@ StartFrame:
     REPEND
     lda #0
     sta VSYNC                ; turn off VSYNC
-    REPEAT 33
+    REPEAT 31
         sta WSYNC            ; display the recommended lines of VBLANK
     REPEND
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Calculations and tasks performed in the VBlank
+;; Calculations and tasks performed during the VBLANK section
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     lda JetXPos
     ldy #0
@@ -140,6 +140,8 @@ StartFrame:
     jsr SetObjectXPos        ; set missile horizontal position
 
     jsr CalculateDigitOffset ; calculate scoreboard digits lookup table offset
+
+    jsr GenerateJetSound     ; configure and enable our jet engine audio
 
     sta WSYNC
     sta HMOVE                ; apply the horizontal offsets previously set
@@ -237,7 +239,7 @@ GameVisibleLine:
     lda #0
     sta PF2                  ; setting PF2 bit pattern
 
-    ldx #85                  ; X counts the number of remaining scanlines
+    ldx #89                  ; X counts the number of remaining scanlines
 .GameLineLoop:
     DRAW_MISSILE             ; macro to check if we should draw the missile
 
@@ -286,12 +288,12 @@ GameVisibleLine:
     sta WSYNC                ; wait for a scanline
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Display Overscan
+;; Display VBLANK Overscan
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     lda #2
-    sta VBLANK               ; turn on VBLANK again
+    sta VBLANK               ; turn on VBLANK again to display overscan
     REPEAT 30
-        sta WSYNC            ; display recommended lines of VBlank Overscan
+        sta WSYNC            ; display recommended lines of overscan
     REPEND
     lda #0
     sta VBLANK               ; turn off VBLANK
@@ -300,52 +302,52 @@ GameVisibleLine:
 ;; Process joystick input for player 0 up/down/left/right
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CheckP0Up:
-    lda #%00010000           ; if player 0 joystick up
+    lda #%00010000           ; joystick up for player 0
     bit SWCHA
     bne CheckP0Down
     lda JetYPos
     cmp #70                  ; if (player0 Y position > 70)
     bpl CheckP0Down          ;    then: skip increment
-.P0UpPressed:
-    inc JetYPos              ;    else: increment Y position
+.P0UpPressed:                ;    else:
+    inc JetYPos              ;        increment Y position
     lda #0
-    sta JetAnimOffset        ; set jet animation frame to zero
+    sta JetAnimOffset        ;        set jet animation frame to zero
 
 CheckP0Down:
-    lda #%00100000           ; if player 0 joystick down
+    lda #%00100000           ; joystick down for player 0
     bit SWCHA
     bne CheckP0Left
     lda JetYPos
     cmp #5                   ; if (player0 Y position < 5)
     bmi CheckP0Left          ;    then: skip decrement
-.P0DownPressed:
-    dec JetYPos              ;    else: decrement Y position
+.P0DownPressed:              ;    else:
+    dec JetYPos              ;        decrement Y position
     lda #0
-    sta JetAnimOffset        ; set jet animation frame to zero
+    sta JetAnimOffset        ;        set jet animation frame to zero
 
 CheckP0Left:
-    lda #%01000000           ; if player 0 joystick left
+    lda #%01000000           ; joystick left for player 0
     bit SWCHA
     bne CheckP0Right
     lda JetXPos
     cmp #35                  ; if (player0 X position < 35)
     bmi CheckP0Right         ;    then: skip decrement
-.P0LeftPressed:
-    dec JetXPos              ;    else: decrement X position
+.P0LeftPressed:              ;    else:
+    dec JetXPos              ;        decrement X position
     lda #JET_HEIGHT
-    sta JetAnimOffset        ; set new offset to display second sprite frame
+    sta JetAnimOffset        ;        set new offset to display second frame
 
 CheckP0Right:
-    lda #%10000000           ; if player 0 joystick right
+    lda #%10000000           ; joystick right for player 0
     bit SWCHA
     bne CheckButtonPressed
     lda JetXPos
     cmp #100                 ; if (player0 X position > 100)
     bpl CheckButtonPressed   ;    then: skip increment
-.P0RightPressed:
-    inc JetXPos              ;    else: increment X position
+.P0RightPressed:             ;    else:
+    inc JetXPos              ;        increment X position
     lda #JET_HEIGHT
-    sta JetAnimOffset        ; set new offset to display second sprite frame
+    sta JetAnimOffset        ;        set new offset to display second frame
 
 CheckButtonPressed:
     lda #%10000000           ; if button is pressed
@@ -392,8 +394,8 @@ EndPositionUpdate:           ; fallback for the position update code
 CheckCollisionP0P1:
     lda #%10000000           ; CXPPMM bit 7 detects P0 and P1 collision
     bit CXPPMM               ; check CXPPMM bit 7 with the above pattern
-    bne .P0P1Collided        ; if collision between P0 and P1 happened, skip
-    jsr SetTerrainRiverColor ; else, set river/terrain to green/blue
+    bne .P0P1Collided        ; if collision P0 and P1 happened, then game over
+    jsr SetGreenBlueTerrain  ; else, set river and terrain to green and blue
     jmp CheckCollisionM0P1   ; check next possible collision
 .P0P1Collided:
     jsr GameOver             ; call GameOver subroutine
@@ -422,9 +424,35 @@ EndCollisionCheck:           ; fallback
     jmp StartFrame           ; continue to display the next frame
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Generate audio for the jet engine sound based on the jet y-position
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The frequency/pitch will be modified based on the jet current y-position.
+;; Normally, the TIA audio frequency goes from 0 (highest) to 31 (lowest).
+;; We subtract 31 - (JetYPos/8) to achieve the desired final pitch value.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+GenerateJetSound subroutine
+    lda #3
+    sta AUDV0                ; set the audio volume register
+
+    lda #8
+    sta AUDC0                ; set the audio control register to white noise
+
+    lda JetYPos              ; loads the accumulator with the jet y-position
+    lsr
+    lsr
+    lsr                      ; divide the accumulator by 8 (using right-shifts)
+    sta Temp                 ; save the Y/8 value in a temp variable
+    lda #31
+    sec
+    sbc Temp                 ; subtract 31-(Y/8)
+    sta AUDF0                ; set the audio frequency/pitch register
+
+    rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Set the colors for the terrain and river to green & blue
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-SetTerrainRiverColor subroutine
+SetGreenBlueTerrain subroutine
     lda #$C2
     sta TerrainColor         ; set terrain color to green
     lda #$84
